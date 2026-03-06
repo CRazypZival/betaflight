@@ -3702,6 +3702,228 @@ static void cliDumpGyroRegisters(const char *cmdName, char *cmdline)
         }
     }
 }
+
+static void cliSpiRegisters(const char *cmdName, char *cmdline)
+{
+    UNUSED(cmdName);
+    UNUSED(cmdline);
+
+    const mpuDetectionResult_t *mpuDetection = gyroMpuDetectionResult();
+    
+    for (int i = 0; i < GYRO_COUNT; i++) {
+        if (!(gyroConfig()->gyro_enabled_bitmask & GYRO_MASK(i))) {
+            continue;
+        }
+
+        cliPrintLinef("\r\n========== Sensor %d ==========", i + 1);
+        
+        uint8_t whoAmI = 0;
+        
+        if (mpuDetection->sensor == ICM_45686_SPI || mpuDetection->sensor == ICM_45605_SPI) {
+            whoAmI = gyroReadRegister(i, 0x72);
+            cliPrintLinef("WHO_AM_I: 0x%02X (Addr:0x72)", whoAmI);
+            
+            uint8_t pwrMgmt = gyroReadRegister(i, 0x10);
+            uint8_t gyroConfig0 = gyroReadRegister(i, 0x1C);
+            uint8_t accelConfig0 = gyroReadRegister(i, 0x1B);
+            uint8_t gyroConfig1 = gyroReadRegister(i, 0x1D);
+            uint8_t accelConfig1 = gyroReadRegister(i, 0x1E);
+            
+            uint8_t gyroFs = (gyroConfig0 >> 5) & 0x07;
+            uint8_t gyroOdr = gyroConfig0 & 0x0F;
+            uint8_t accFs = (accelConfig0 >> 5) & 0x07;
+            uint8_t accOdr = accelConfig0 & 0x0F;
+            
+            const char *gyroFsStr[] = {"2000dps", "1000dps", "500dps", "250dps", "125dps", "62.5dps", "31.25dps", "15.625dps"};
+            const char *accFsStr[] = {"16g", "8g", "4g", "2g"};
+            const char *odrStr[] = {"OFF", "32kHz", "16kHz", "8kHz", "4kHz", "2kHz", "1kHz", "500Hz", "250Hz", "125Hz", "62.5Hz", "31.25Hz", "15.625Hz", "RSVD", "RSVD", "RSVD"};
+            
+            cliPrintLinef("\r\nGYRO:");
+            cliPrintLinef("  FS: %s (Addr:0x1C - Val:0x%02X)", gyroFsStr[gyroFs], gyroConfig0);
+            cliPrintLinef("  ODR: %s (Addr:0x1C - Val:0x%02X)", odrStr[gyroOdr], gyroConfig0);
+            cliPrintLinef("  CONFIG1: Addr:0x1D - Val:0x%02X", gyroConfig1);
+            cliPrintLinef("  PWR_MGMT: Addr:0x10 - Val:0x%02X", pwrMgmt);
+            
+            cliPrintLinef("\r\nACC:");
+            cliPrintLinef("  FS: %s (Addr:0x1B - Val:0x%02X)", accFsStr[accFs], accelConfig0);
+            cliPrintLinef("  ODR: %s (Addr:0x1B - Val:0x%02X)", odrStr[accOdr], accelConfig0);
+            cliPrintLinef("  CONFIG1: Addr:0x1E - Val:0x%02X", accelConfig1);
+            
+        } else if (mpuDetection->sensor == LSM6DSV16X_SPI || mpuDetection->sensor == LSM6DSK320X_SPI) {
+            whoAmI = gyroReadRegister(i, 0x0F);
+            cliPrintLinef("WHO_AM_I: 0x%02X (Addr:0x0F)", whoAmI);
+            
+            uint8_t ctrl1 = gyroReadRegister(i, 0x10);
+            uint8_t ctrl2 = gyroReadRegister(i, 0x11);
+            uint8_t ctrl6 = gyroReadRegister(i, 0x15);
+            uint8_t ctrl7 = gyroReadRegister(i, 0x16);
+            uint8_t ctrl8 = gyroReadRegister(i, 0x17);
+            uint8_t ctrl9 = gyroReadRegister(i, 0x18);
+            uint8_t haodrCfg = gyroReadRegister(i, 0x62);
+            
+            uint8_t gyroOpMode = (ctrl2 >> 4) & 0x07;
+            uint8_t gyroOdr = ctrl2 & 0x0F;
+            uint8_t gyroFs = ctrl6 & 0x0F;
+            uint8_t gyroLpf1En = ctrl7 & 0x01;
+            uint8_t gyroLpf1Bw = (ctrl6 >> 4) & 0x07;
+            
+            uint8_t accOpMode = (ctrl1 >> 4) & 0x07;
+            uint8_t accOdr = ctrl1 & 0x0F;
+            uint8_t accFs = ctrl8 & 0x03;
+            uint8_t accLpf2En = (ctrl9 >> 3) & 0x01;
+            uint8_t accHpSlope = (ctrl9 >> 4) & 0x01;
+            uint8_t haodrMode = haodrCfg & 0x03;
+            
+            const char *gyroOpModeStr[] = {"HP", "HA", "RSVD", "ODR_TRIG", "SLEEP", "LP", "RSVD", "NORMAL"};
+            const char *gyroFsStr[] = {"125dps", "250dps", "500dps", "1000dps", "2000dps", "RSVD", "RSVD", "RSVD", 
+                                       "RSVD", "RSVD", "RSVD", "RSVD", "4000dps"};
+            const char *accOpModeStr[] = {"HP", "HA", "RSVD", "ODR_TRIG", "LP1", "LP2", "LP3", "NORMAL"};
+            const char *accFsStr[] = {"2g", "4g", "8g", "16g"};
+            const char *haodrModeStr[] = {"MODE0", "MODE1", "MODE2", "RSVD"};
+            
+            int gyroOdrHz = 0;
+            if (gyroOdr == 0) gyroOdrHz = 0;
+            else if (gyroOdr == 1) gyroOdrHz = 1;
+            else if (gyroOdr == 2) gyroOdrHz = 7;
+            else if (gyroOdr >= 3 && gyroOdr <= 12) {
+                int odrTable[] = {15, 30, 60, 120, 240, 480, 960, 1920, 3840, 7680};
+                gyroOdrHz = odrTable[gyroOdr - 3];
+            }
+            
+            int accOdrHz = 0;
+            if (accOdr == 0) accOdrHz = 0;
+            else if (accOdr == 1) accOdrHz = 1;
+            else if (accOdr == 2) accOdrHz = 7;
+            else if (accOdr >= 3 && accOdr <= 12) {
+                int odrTable[] = {15, 30, 60, 120, 240, 480, 960, 1920, 3840, 7680};
+                accOdrHz = odrTable[accOdr - 3];
+            }
+            
+            cliPrintLinef("\r\nGYRO:");
+            cliPrintLinef("  FS: %s (Addr:0x15 - Val:0x%02X)", 
+                         (gyroFs < 13) ? gyroFsStr[gyroFs] : "UNKNOWN", ctrl6);
+            cliPrintLinef("  ODR: %dHz (Addr:0x11 - Val:0x%02X)", gyroOdrHz, ctrl2);
+            cliPrintLinef("  OP_MODE: %s (Addr:0x11 - Val:0x%02X)", gyroOpModeStr[gyroOpMode], ctrl2);
+            cliPrintLinef("  HAODR_MODE: %s (Addr:0x62 - Val:0x%02X)", haodrModeStr[haodrMode], haodrCfg);
+            cliPrintLinef("  LPF1_EN: %s (Addr:0x16 - Val:0x%02X)", gyroLpf1En ? "ON" : "OFF", ctrl7);
+            if (gyroLpf1En) {
+                const char *lpf1BwStr[] = {"288Hz", "215Hz", "157Hz", "455Hz", "102Hz", "58Hz", "28.8Hz", "14.4Hz"};
+                cliPrintLinef("  LPF1_BW: %s (Addr:0x15 - Val:0x%02X)", lpf1BwStr[gyroLpf1Bw], ctrl6);
+            }
+            
+            cliPrintLinef("\r\nACC:");
+            cliPrintLinef("  FS: %s (Addr:0x17 - Val:0x%02X)", accFsStr[accFs], ctrl8);
+            cliPrintLinef("  ODR: %dHz (Addr:0x10 - Val:0x%02X)", accOdrHz, ctrl1);
+            cliPrintLinef("  OP_MODE: %s (Addr:0x10 - Val:0x%02X)", accOpModeStr[accOpMode], ctrl1);
+            cliPrintLinef("  HAODR_MODE: %s (Addr:0x62 - Val:0x%02X)", haodrModeStr[haodrMode], haodrCfg);
+            cliPrintLinef("  LPF2_EN: %s (Addr:0x18 - Val:0x%02X)", accLpf2En ? "ON" : "OFF", ctrl9);
+            cliPrintLinef("  HP_SLOPE_EN: %s (Addr:0x18 - Val:0x%02X)", accHpSlope ? "ON" : "OFF", ctrl9);
+            
+            uint8_t hpLpf2Bw = (ctrl8 >> 5) & 0x07;
+            if (accLpf2En || accHpSlope) {
+                const char *hpLpf2BwStr[] = {"4", "10", "20", "45", "100", "200", "400", "800"};
+                cliPrintLinef("  HP/LPF2_BW: %sHz (Addr:0x17 - Val:0x%02X)", hpLpf2BwStr[hpLpf2Bw], ctrl8);
+            }
+            
+        } else if (mpuDetection->sensor == ICM_42605_SPI || mpuDetection->sensor == ICM_42622P_SPI || 
+                   mpuDetection->sensor == ICM_42688P_SPI || mpuDetection->sensor == IIM_42652_SPI || 
+                   mpuDetection->sensor == IIM_42653_SPI) {
+            whoAmI = gyroReadRegister(i, MPU_RA_WHO_AM_I);
+            cliPrintLinef("WHO_AM_I: 0x%02X (Addr:0x%02X)", whoAmI, MPU_RA_WHO_AM_I);
+            
+            uint8_t gyroConfig0 = gyroReadRegister(i, 0x4F);
+            uint8_t accelConfig0 = gyroReadRegister(i, 0x50);
+            uint8_t gyroConfig1 = gyroReadRegister(i, 0x51);
+            uint8_t gyroAccelConfig0 = gyroReadRegister(i, 0x52);
+            uint8_t accelConfig1 = gyroReadRegister(i, 0x53);
+            uint8_t pwrMgmt0 = gyroReadRegister(i, 0x4E);
+            
+            uint8_t gyroFs = (gyroConfig0 >> 5) & 0x07;
+            uint8_t gyroOdr = gyroConfig0 & 0x0F;
+            uint8_t accFs = (accelConfig0 >> 5) & 0x07;
+            uint8_t accOdr = accelConfig0 & 0x0F;
+            uint8_t gyroUiFilterOrder = (gyroConfig1 >> 2) & 0x03;
+            uint8_t accUiFilterOrder = (accelConfig1 >> 3) & 0x03;
+            
+            const char *gyroFsStr[] = {"2000dps", "1000dps", "500dps", "250dps", "125dps", "62.5dps", "31.25dps", "15.625dps"};
+            const char *accFsStr[] = {"16g", "8g", "4g", "2g"};
+            const char *odrStr[] = {"OFF", "32kHz", "16kHz", "8kHz", "4kHz", "2kHz", "1kHz", "500Hz", "250Hz", "125Hz", "62.5Hz", "31.25Hz", "15.625Hz", "RSVD", "RSVD", "RSVD"};
+            const char *filterOrderStr[] = {"1st", "2nd", "3rd", "RSVD"};
+            
+            cliPrintLinef("\r\nGYRO:");
+            cliPrintLinef("  FS: %s (Addr:0x4F - Val:0x%02X)", gyroFsStr[gyroFs], gyroConfig0);
+            cliPrintLinef("  ODR: %s (Addr:0x4F - Val:0x%02X)", odrStr[gyroOdr], gyroConfig0);
+            cliPrintLinef("  UI_FILT_ORD: %s (Addr:0x51 - Val:0x%02X)", filterOrderStr[gyroUiFilterOrder], gyroConfig1);
+            cliPrintLinef("  CONFIG1: Addr:0x51 - Val:0x%02X", gyroConfig1);
+            
+            cliPrintLinef("\r\nACC:");
+            cliPrintLinef("  FS: %s (Addr:0x50 - Val:0x%02X)", accFsStr[accFs], accelConfig0);
+            cliPrintLinef("  ODR: %s (Addr:0x50 - Val:0x%02X)", odrStr[accOdr], accelConfig0);
+            cliPrintLinef("  UI_FILT_ORD: %s (Addr:0x53 - Val:0x%02X)", filterOrderStr[accUiFilterOrder], accelConfig1);
+            cliPrintLinef("  CONFIG1: Addr:0x53 - Val:0x%02X", accelConfig1);
+            
+            cliPrintLinef("\r\nCOMMON:");
+            cliPrintLinef("  PWR_MGMT0: Addr:0x4E - Val:0x%02X", pwrMgmt0);
+            cliPrintLinef("  GYRO_ACCEL_CONFIG0: Addr:0x52 - Val:0x%02X", gyroAccelConfig0);
+            
+        } else if (mpuDetection->sensor == BMI_270_SPI) {
+            whoAmI = gyroReadRegister(i, 0x00);
+            cliPrintLinef("WHO_AM_I: 0x%02X (Addr:0x00)", whoAmI);
+            
+            uint8_t accConf = gyroReadRegister(i, 0x40);
+            uint8_t accRange = gyroReadRegister(i, 0x41);
+            uint8_t gyrConf = gyroReadRegister(i, 0x42);
+            uint8_t gyrRange = gyroReadRegister(i, 0x43);
+            
+            uint8_t accOdr = accConf & 0x0F;
+            uint8_t accBwp = (accConf >> 4) & 0x07;
+            uint8_t gyroOdr = gyrConf & 0x0F;
+            uint8_t gyroBwp = (gyrConf >> 4) & 0x03;
+            uint8_t gyroFs = gyrRange & 0x07;
+            uint8_t accFs = accRange & 0x03;
+            
+            const char *gyroFsStr[] = {"2000dps", "1000dps", "500dps", "250dps", "125dps"};
+            const char *accFsStr[] = {"2g", "4g", "8g", "16g"};
+            const char *odrStr[] = {"25/32Hz", "25/16Hz", "25/8Hz", "25/4Hz", "25/2Hz", "25Hz", "50Hz", "100Hz", "200Hz", "400Hz", "800Hz", "1600Hz", "3200Hz", "6400Hz"};
+            const char *gyroBwpStr[] = {"OSR4", "OSR2", "NORMAL", "CIC"};
+            const char *accBwpStr[] = {"OSR4", "OSR2", "NORMAL", "CIC", "RSVD", "RSVD", "RSVD", "RSVD"};
+            
+            cliPrintLinef("\r\nGYRO:");
+            cliPrintLinef("  FS: %s (Addr:0x43 - Val:0x%02X)", (gyroFs < 5) ? gyroFsStr[gyroFs] : "UNKNOWN", gyrRange);
+            cliPrintLinef("  ODR: %s (Addr:0x42 - Val:0x%02X)", (gyroOdr < 14) ? odrStr[gyroOdr] : "UNKNOWN", gyrConf);
+            cliPrintLinef("  BWP: %s (Addr:0x42 - Val:0x%02X)", gyroBwpStr[gyroBwp], gyrConf);
+            
+            cliPrintLinef("\r\nACC:");
+            cliPrintLinef("  FS: %s (Addr:0x41 - Val:0x%02X)", accFsStr[accFs], accRange);
+            cliPrintLinef("  ODR: %s (Addr:0x40 - Val:0x%02X)", (accOdr < 14) ? odrStr[accOdr] : "UNKNOWN", accConf);
+            cliPrintLinef("  BWP: %s (Addr:0x40 - Val:0x%02X)", accBwpStr[accBwp], accConf);
+            
+        } else {
+            whoAmI = gyroReadRegister(i, MPU_RA_WHO_AM_I);
+            cliPrintLinef("WHO_AM_I: 0x%02X (Addr:0x%02X)", whoAmI, MPU_RA_WHO_AM_I);
+            
+            uint8_t config = gyroReadRegister(i, MPU_RA_CONFIG);
+            uint8_t gyroConfig = gyroReadRegister(i, MPU_RA_GYRO_CONFIG);
+            uint8_t accelConfig = gyroReadRegister(i, MPU_RA_ACCEL_CONFIG);
+            
+            uint8_t dlpfCfg = config & 0x07;
+            uint8_t gyroFs = (gyroConfig >> 3) & 0x03;
+            uint8_t accFs = (accelConfig >> 3) & 0x03;
+            
+            const char *gyroFsStr[] = {"250dps", "500dps", "1000dps", "2000dps"};
+            const char *accFsStr[] = {"2g", "4g", "8g", "16g"};
+            
+            cliPrintLinef("\r\nGYRO:");
+            cliPrintLinef("  FS: %s (Addr:0x%02X - Val:0x%02X)", gyroFsStr[gyroFs], MPU_RA_GYRO_CONFIG, gyroConfig);
+            cliPrintLinef("  DLPF_CFG: %d (Addr:0x%02X - Val:0x%02X)", dlpfCfg, MPU_RA_CONFIG, config);
+            
+            cliPrintLinef("\r\nACC:");
+            cliPrintLinef("  FS: %s (Addr:0x%02X - Val:0x%02X)", accFsStr[accFs], MPU_RA_ACCEL_CONFIG, accelConfig);
+        }
+        
+        cliPrintLinef("=============================\r\n");
+    }
+}
 #endif
 
 static int parseOutputIndex(const char *cmdName, char *pch, bool allowAllEscs)
@@ -6650,6 +6872,7 @@ const clicmd_t cmdTable[] = {
 #endif
 #if defined(USE_GYRO_REGISTER_DUMP) && !defined(SIMULATOR_BUILD)
     CLI_COMMAND_DEF("gyroregisters", "dump gyro config registers contents", NULL, cliDumpGyroRegisters),
+    CLI_COMMAND_DEF("spiregisters", "显示SPI传感器寄存器详细信息", NULL, cliSpiRegisters),
 #endif
     CLI_COMMAND_DEF("help", "display command help", "[search string]", cliHelp),
 #ifdef USE_LED_STRIP_STATUS_MODE
