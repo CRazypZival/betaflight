@@ -51,6 +51,7 @@
 #define IIM42652_WHO_AM_I_CONST             (0x6F)
 #define IIM42653_WHO_AM_I_CONST             (0x56)
 #define LSM6DSV16X_WHO_AM_I_CONST           (0x70)
+#define LSM6DSV32X_WHO_AM_I_CONST           (0x65)
 #define LSM6DSK320X_WHO_AM_I_CONST          (0x75)
 #define ICM40609_WHO_AM_I_CONST             (0x3B)
 

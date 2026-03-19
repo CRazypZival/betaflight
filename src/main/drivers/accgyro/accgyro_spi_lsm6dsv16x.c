@@ -37,8 +37,8 @@
  *
  */
 
-#define OP_MODE 2//1：HA 2:HP
-#define LPF_ENABLE 0//1：LPF1&LPF2 ON 2:LPF1&LPF2 off
+#define OP_MODE 1//1：HA 2:HP
+#define LPF_ENABLE 1//1：LPF1&LPF2 ON 2:LPF1&LPF2 off
 
 // 10 MHz max SPI frequency
 #define LSM6DSV16X_MAX_SPI_CLK_HZ 10000000
@@ -366,6 +366,11 @@
 #define LSM6DSV_CTRL8_FS_XL_4G                          1
 #define LSM6DSV_CTRL8_FS_XL_8G                          2
 #define LSM6DSV_CTRL8_FS_XL_16G                         3
+
+#define LSM6DSV32X_CTRL8_FS_XL_4G                       0
+#define LSM6DSV32X_CTRL8_FS_XL_8G                       1
+#define LSM6DSV32X_CTRL8_FS_XL_16G                      2
+#define LSM6DSV32X_CTRL8_FS_XL_32G                      3
 
 // Accelerometer HP + LPF2 bandwidth selection
 #define LSM6DSV_CTRL8_HP_LPF2_XL_BW_4                   0
@@ -874,7 +879,7 @@ uint8_t lsm6dsv16xSpiDetect(const extDevice_t *dev)
 {
     const uint8_t whoAmI = spiReadRegMsk(dev, LSM6DSV_WHO_AM_I);
 
-    if (whoAmI != LSM6DSV16X_WHO_AM_I_CONST) {
+    if (whoAmI != LSM6DSV16X_WHO_AM_I_CONST && whoAmI != LSM6DSV32X_WHO_AM_I_CONST) {
         return MPU_NONE;
     }
 
@@ -994,8 +999,6 @@ static void lsm6dsk320xGyroInit(gyroDev_t *gyro)
                                     LSM6DSV_HAODR_CFG_HAODR_SEL_SHIFT));
 #endif
 
-    // Enable 16G sensitivity
-    // Set the LPF1 filter bandwidth
     spiWriteReg(dev, LSM6DSV_CTRL8,
                 LSM6DSV_ENCODE_BITS(LSM6DSV_CTRL8_HP_LPF2_XL_BW_4,
                                     LSM6DSV_CTRL8_HP_LPF2_XL_BW_2_MASK,
@@ -1004,8 +1007,6 @@ static void lsm6dsk320xGyroInit(gyroDev_t *gyro)
                                     LSM6DSV_CTRL8_FS_XL_MASK,
                                     LSM6DSV_CTRL8_FS_XL_SHIFT));
 
-    // Enable 2000 deg/s sensitivity and selected LPF1 filter setting
-    // Set the LPF1 filter bandwidth
     spiWriteReg(dev, LSM6DSV_CTRL6,
                 LSM6DSV_ENCODE_BITS(lsm6dsk320xLPF1BandwidthOptions[gyroConfig()->gyro_hardware_lpf],
                                     LSM6DSV_CTRL6_LPF1_G_BW_MASK,
@@ -1104,13 +1105,11 @@ static void lsm6dsv16xGyroInit(gyroDev_t *gyro)
                                     LSM6DSV_HAODR_CFG_HAODR_SEL_SHIFT));
 #endif
 
-    // Enable 16G sensitivity
-    // Set the LPF1 filter bandwidth
     spiWriteReg(dev, LSM6DSV_CTRL8,
                 LSM6DSV_ENCODE_BITS(LSM6DSV_CTRL8_HP_LPF2_XL_BW_4,
                                     LSM6DSV_CTRL8_HP_LPF2_XL_BW_2_MASK,
                                     LSM6DSV_CTRL8_HP_LPF2_XL_BW_2_SHIFT) |
-                LSM6DSV_ENCODE_BITS(LSM6DSV_CTRL8_FS_XL_16G,
+                LSM6DSV_ENCODE_BITS((spiReadRegMsk(dev, LSM6DSV_WHO_AM_I) == LSM6DSV32X_WHO_AM_I_CONST) ? LSM6DSV32X_CTRL8_FS_XL_16G : LSM6DSV_CTRL8_FS_XL_16G,
                                     LSM6DSV_CTRL8_FS_XL_MASK,
                                     LSM6DSV_CTRL8_FS_XL_SHIFT));
 
