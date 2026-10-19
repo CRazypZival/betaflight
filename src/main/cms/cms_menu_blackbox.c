@@ -135,6 +135,9 @@ static void cmsx_Blackbox_GetDeviceStatus(void)
 #endif
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         unit = "KB";
 

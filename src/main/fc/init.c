@@ -637,7 +637,11 @@ void initMsc(void)
     // If the blackbox device is onboard flash, then initialize and scan
     // it to identify the log files *before* starting the USB device to
     // prevent timeouts of the mass storage device.
-    if (blackboxConfig()->device == BLACKBOX_DEVICE_FLASH) {
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_FLASH
+#ifdef USE_ASCENT
+        || blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT
+#endif
+        ) {
         emfat_init_files();
     }
 #endif

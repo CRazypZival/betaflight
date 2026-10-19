@@ -59,6 +59,9 @@
 #include "drivers/dshot.h"
 #include "drivers/dshot_command.h"
 #include "drivers/flash/flash.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#endif
 #include "drivers/io.h"
 #include "drivers/motor.h"
 #include "drivers/osd.h"
@@ -618,6 +621,12 @@ RAM_CODE static void serializeDataflashReadReply(sbuf_t *dst, uint32_t address, 
         while (state.bytesWritten < state.outBufLen && address + bytesReadTotal < flashfsSize) {
             const int bytesRead = flashfsReadAbs(address + bytesReadTotal, readBuffer,
                 MIN(sizeof(readBuffer), flashfsSize - address - bytesReadTotal));
+
+#ifdef USE_ASCENT
+            if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && bytesRead <= 0) {
+                break;
+            }
+#endif
 
             const int status = huffmanEncodeBufStreaming(&state, readBuffer, bytesRead, huffmanTable);
             if (status == -1) {
@@ -4824,6 +4833,13 @@ RAM_CODE mspResult_e mspFcProcessCommand(mspDescriptor_t srcDesc, mspPacket_t *c
         ret = MSP_RESULT_ACK;
 #ifdef USE_FLASHFS
     } else if (cmdMSP == MSP_DATAFLASH_READ) {
+#ifdef USE_ASCENT
+        if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT
+            && (ARMING_FLAG(ARMED) || !ascentIsAvailable())) {
+            reply->result = MSP_RESULT_ERROR;
+            return MSP_RESULT_ERROR;
+        }
+#endif
         mspFcDataFlashReadCommand(dst, src);
         ret = MSP_RESULT_ACK;
 #endif

@@ -51,6 +51,9 @@
 
 #include "io/asyncfatfs/asyncfatfs.h"
 #include "io/flashfs.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#endif
 #include "io/serial.h"
 
 #include "msp/msp_serial.h"
@@ -118,6 +121,9 @@ void blackboxWrite(uint8_t value)
 
     switch (blackboxConfig()->device) {
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         flashfsWriteByte(value); // Write byte asynchronously
         break;
@@ -179,6 +185,9 @@ int blackboxWriteString(const char *s)
     switch (blackboxConfig()->device) {
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         length = strlen(s);
         flashfsWrite((const uint8_t*) s, length, false); // Write asynchronously
@@ -227,6 +236,9 @@ void blackboxDeviceFlush(void)
          * This is our only output device which requires us to call flush() in order for it to write anything. The other
          * devices will progressively write in the background without Blackbox calling anything.
          */
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         flashfsFlushAsync(false);
         break;
@@ -255,6 +267,9 @@ bool blackboxDeviceFlushForce(void)
         return isSerialTransmitBufferEmpty(blackboxPort);
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         return flashfsFlushAsync(true);
 #endif // USE_FLASHFS
@@ -367,6 +382,9 @@ bool blackboxDeviceOpen(void)
         }
         break;
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         if (!flashfsIsSupported() || isBlackboxDeviceFull()) {
             return false;
@@ -405,6 +423,9 @@ bool blackboxDeviceOpen(void)
 void blackboxEraseAll(void)
 {
     switch (blackboxConfig()->device) {
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         /* Stop the recorder as if blackbox_mode = ALWAYS it will attempt to resume writing after
          * the erase and leave a corrupted first log.
@@ -425,6 +446,9 @@ void blackboxEraseAll(void)
 bool isBlackboxErased(void)
 {
     switch (blackboxConfig()->device) {
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         return flashfsIsReady();
         break;
@@ -457,6 +481,9 @@ void blackboxDeviceClose(void)
         }
         break;
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         // Some flash device, e.g., NAND devices, require explicit close to flush internally buffered data.
         flashfsClose();
@@ -659,6 +686,9 @@ bool isBlackboxDeviceFull(void)
         return false;
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         return flashfsIsEOF();
 #endif // USE_FLASHFS
@@ -685,6 +715,10 @@ bool isBlackboxDeviceWorking(void)
 #endif
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+        return ascentIsAvailable() && flashfsIsReady();
+#endif
     case BLACKBOX_DEVICE_FLASH:
         return flashfsIsReady();
 #endif
@@ -731,6 +765,9 @@ void blackboxReplenishHeaderBudget(void)
         freeSpace = serialTxBytesFree(blackboxPort);
         break;
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         freeSpace = flashfsGetWriteBufferFreeSpace();
         break;
@@ -788,6 +825,9 @@ blackboxBufferReserveStatus_e blackboxDeviceReserveBufferSpace(int32_t bytes)
         return BLACKBOX_RESERVE_TEMPORARY_FAILURE;
 
 #ifdef USE_FLASHFS
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
     case BLACKBOX_DEVICE_FLASH:
         if (bytes > (int32_t) flashfsGetWriteBufferSize()) {
             return BLACKBOX_RESERVE_PERMANENT_FAILURE;

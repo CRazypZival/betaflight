@@ -44,6 +44,11 @@
 #include "common/maths.h"
 #include "common/printf.h"
 #include "drivers/flash/flash.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#include "blackbox/blackbox.h"
+#include "fc/runtime_config.h"
+#endif
 #include "drivers/light_led.h"
 #include "drivers/time.h"
 
@@ -61,7 +66,32 @@ static flashfsState_e flashfsState = FLASHFS_IDLE;
 static flashSector_t eraseSectorCurrent = 0;
 static bool eraseOperationIsChipErase = false;
 
-static DMA_DATA_ZERO_INIT uint8_t flashWriteBuffer[FLASHFS_WRITE_BUFFER_SIZE];
+#ifdef USE_ASCENT
+#define FLASHFS_BUFFER_ALLOCATION 2048
+#else
+#define FLASHFS_BUFFER_ALLOCATION FLASHFS_WRITE_BUFFER_SIZE
+#endif
+static DMA_DATA_ZERO_INIT uint8_t flashWriteBuffer[FLASHFS_BUFFER_ALLOCATION];
+
+static uint32_t flashfsBufferSize(void)
+{
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT) {
+        return FLASHFS_BUFFER_ALLOCATION;
+    }
+#endif
+    return FLASHFS_WRITE_BUFFER_SIZE;
+}
+
+static uint32_t flashfsAutoFlushLength(void)
+{
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT) {
+        return 256;
+    }
+#endif
+    return FLASHFS_WRITE_BUFFER_AUTO_FLUSH_LEN;
+}
 
 /* The position of our head and tail in the circular flash write buffer.
  *
@@ -73,8 +103,13 @@ static DMA_DATA_ZERO_INIT uint8_t flashWriteBuffer[FLASHFS_WRITE_BUFFER_SIZE];
  * The tail is advanced once a write is complete up to the location behind head. The tail is advanced
  * by a callback from the FLASH write routine. This prevents data being overwritten whilst a write is in progress.
  */
+#ifdef USE_ASCENT
+static uint16_t bufferHead = 0;
+static volatile uint16_t bufferTail = 0;
+#else
 static uint8_t bufferHead = 0;
 static volatile uint8_t bufferTail = 0;
+#endif
 
 /* Track whether the write interlock is clear, i.e. whether the buffers may be presented to the
  * device. It is cleared while a write is outstanding and set again once the completion callback
@@ -220,6 +255,11 @@ void flashfsEraseRange(uint32_t start, uint32_t end)
  */
 bool flashfsIsReady(void)
 {
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && !ascentIsAvailable()) {
+        return false;
+    }
+#endif
     // Check for flash chip existence first, then check if idle and ready.
 
     return (flashfsIsSupported() && (flashfsState == FLASHFS_IDLE) && flashIsReady());
@@ -240,7 +280,7 @@ static uint32_t flashfsTransmitBufferUsed(void)
     if (bufferHead >= bufferTail)
         return bufferHead - bufferTail;
 
-    return FLASHFS_WRITE_BUFFER_SIZE - bufferTail + bufferHead;
+    return flashfsBufferSize() - bufferTail + bufferHead;
 }
 
 /**
@@ -248,7 +288,7 @@ static uint32_t flashfsTransmitBufferUsed(void)
  */
 uint32_t flashfsGetWriteBufferSize(void)
 {
-    return FLASHFS_WRITE_BUFFER_USABLE;
+    return flashfsBufferSize() - 1;
 }
 
 /**
@@ -267,8 +307,8 @@ static void flashfsAdvanceTailInBuffer(uint32_t delta)
     bufferTail += delta;
 
     // Wrap tail around the end of the buffer
-    if (bufferTail >= FLASHFS_WRITE_BUFFER_SIZE) {
-        bufferTail -= FLASHFS_WRITE_BUFFER_SIZE;
+    if (bufferTail >= flashfsBufferSize()) {
+        bufferTail -= flashfsBufferSize();
     }
 }
 
@@ -361,7 +401,7 @@ static int flashfsGetDirtyDataBuffers(uint8_t const *buffers[], uint32_t bufferS
         bufferSizes[1] = 0;
         return 1;
     } else if (bufferHead < bufferTail) {
-        bufferSizes[0] = FLASHFS_WRITE_BUFFER_SIZE - bufferTail;
+        bufferSizes[0] = flashfsBufferSize() - bufferTail;
         bufferSizes[1] = bufferHead;
         if (bufferSizes[1] == 0) {
             return 1;
@@ -378,6 +418,9 @@ static int flashfsGetDirtyDataBuffers(uint8_t const *buffers[], uint32_t bufferS
 
 static bool flashfsNewData(void)
 {
+#ifdef USE_ASCENT
+    ascentUpdate();
+#endif
     return dataWritten;
 }
 
@@ -420,7 +463,7 @@ bool flashfsFlushAsync(bool force)
     bufCount = flashfsGetDirtyDataBuffers(buffers, bufferSizes);
     uint32_t bufferedBytes = bufferSizes[0] + bufferSizes[1];
 
-    if (bufCount && (force || (bufferedBytes >= FLASHFS_WRITE_BUFFER_AUTO_FLUSH_LEN))) {
+    if (bufCount && (force || (bufferedBytes >= flashfsAutoFlushLength()))) {
         flashfsWriteBuffers(buffers, bufferSizes, bufCount, false);
     }
 
@@ -438,6 +481,24 @@ void flashfsFlushSync(void)
     uint8_t const * buffers[2];
     uint32_t bufferSizes[2];
     int bufCount;
+
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT) {
+        if (ARMING_FLAG(ARMED)) {
+            return;
+        }
+        while (ascentIsAvailable() && !flashfsBufferIsEmpty()) {
+            if (!flashfsNewData()) {
+                continue;
+            }
+            bufCount = flashfsGetDirtyDataBuffers(buffers, bufferSizes);
+            if (bufCount && !flashfsWriteBuffers(buffers, bufferSizes, bufCount, true)) {
+                break;
+            }
+        }
+        return;
+    }
+#endif
 
     if (flashfsBufferIsEmpty()) {
         return; // Nothing to flush
@@ -498,6 +559,11 @@ void flashfsSeekAbs(uint32_t offset)
  */
 void flashfsWriteByte(uint8_t byte)
 {
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && !flashfsGetWriteBufferFreeSpace()) {
+        return;
+    }
+#endif
 #ifdef USE_FLASH_TEST_PRBS
     if (debugMode == DEBUG_FLASH_TEST_PRBS) {
         debug[1]++;
@@ -511,11 +577,11 @@ void flashfsWriteByte(uint8_t byte)
 
     flashWriteBuffer[bufferHead++] = byte;
 
-    if (bufferHead >= FLASHFS_WRITE_BUFFER_SIZE) {
+    if (bufferHead >= flashfsBufferSize()) {
         bufferHead = 0;
     }
 
-    if (flashfsTransmitBufferUsed() >= FLASHFS_WRITE_BUFFER_AUTO_FLUSH_LEN) {
+    if (flashfsTransmitBufferUsed() >= flashfsAutoFlushLength()) {
         flashfsFlushAsync(false);
     }
 }
@@ -560,7 +626,7 @@ void flashfsWrite(const uint8_t *data, unsigned int len, bool sync)
      * Would writing this data to our buffer cause our buffer to reach the flush threshold? If so try to write through
      * to the flash now
      */
-    if (bufCount && (totalBufSize >= FLASHFS_WRITE_BUFFER_AUTO_FLUSH_LEN)) {
+    if (bufCount && (totalBufSize >= flashfsAutoFlushLength())) {
         flashfsWriteBuffers(buffers, bufferSizes, bufCount, sync);
     }
 }
@@ -573,6 +639,12 @@ void flashfsWrite(const uint8_t *data, unsigned int len, bool sync)
 int flashfsReadAbs(uint32_t address, uint8_t *buffer, unsigned int len)
 {
     int bytesRead;
+
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && ARMING_FLAG(ARMED)) {
+        return 0;
+    }
+#endif
 
     // Did caller try to read past the end of the volume?
     if (address + len > flashfsSize) {
@@ -664,6 +736,11 @@ int flashfsIdentifyStartOfFreeSpace(void)
  */
 bool flashfsIsEOF(void)
 {
+#ifdef USE_ASCENT
+    if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && !ascentIsAvailable()) {
+        return true;
+    }
+#endif
     return tailAddress >= flashfsSize;
 }
 

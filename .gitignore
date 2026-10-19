@@ -22,6 +22,20 @@ README.pdf
 # artefacts of top-level Makefile
 /downloads/
 /tools/
+!/tools/
+/tools/*
+!/tools/SPI_LOG/
+/tools/SPI_LOG/*
+!/tools/SPI_LOG/AGENT.md
+!/tools/SPI_LOG/ASCENT_需求.txt
+!/tools/SPI_LOG/msp_tool.py
+!/tools/SPI_LOG/ESP32blackboxtest/
+/tools/SPI_LOG/ESP32blackboxtest/*
+!/tools/SPI_LOG/ESP32blackboxtest/CMakeLists.txt
+!/tools/SPI_LOG/ESP32blackboxtest/README.txt
+!/tools/SPI_LOG/ESP32blackboxtest/partitions.csv
+!/tools/SPI_LOG/ESP32blackboxtest/sdkconfig.defaults
+!/tools/SPI_LOG/ESP32blackboxtest/main/
 /build/
 # local changes only
 mk/local.mk

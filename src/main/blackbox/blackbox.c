@@ -1053,6 +1053,9 @@ void blackboxValidateConfig(void)
 #ifdef USE_FLASHFS
     case BLACKBOX_DEVICE_FLASH:
 #endif
+#ifdef USE_ASCENT
+    case BLACKBOX_DEVICE_ASCENT:
+#endif
 #ifdef USE_SDCARD
     case BLACKBOX_DEVICE_SDCARD:
 #endif

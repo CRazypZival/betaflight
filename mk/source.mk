@@ -379,6 +379,7 @@ RX_SRC = \
             rx/expresslrs_telemetry.c
 
 FLASH_SRC += \
+            drivers/ascent.c \
             drivers/flash/flash.c \
             drivers/flash/flash_m25p16.c \
             drivers/flash/flash_mt29f.c \

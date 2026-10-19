@@ -45,6 +45,11 @@
 #include "drivers/time.h"
 #include "drivers/system.h"
 
+#ifdef USE_ASCENT
+#include "blackbox/blackbox.h"
+#include "drivers/ascent.h"
+#endif
+
 #ifdef USE_FLASH_SPI
 
 // 20 MHz max SPI frequency
@@ -425,13 +430,21 @@ void flashPreinit(const flashConfig_t *flashConfig)
 static bool flashDeviceInit(const flashConfig_t *flashConfig)
 {
     bool haveFlash = false;
+    bool ascentMode = false;
 
 #if !defined(USE_FLASH_SPI) && !defined(USE_FLASH_QUADSPI) && !defined(USE_FLASH_OCTOSPI)
     UNUSED(flashConfig);
 #endif
 
+#ifdef USE_ASCENT
+    ascentMode = blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT;
+    if (ascentMode) {
+        haveFlash = ascentInit(&flashDevice);
+    }
+#endif
+
 #ifdef USE_FLASH_SPI
-    bool useSpi = (SPI_CFG_TO_DEV(flashConfig->spiDevice) != SPIINVALID);
+    bool useSpi = !ascentMode && (SPI_CFG_TO_DEV(flashConfig->spiDevice) != SPIINVALID);
 
     if (useSpi) {
         haveFlash = flashSpiInit(flashConfig);

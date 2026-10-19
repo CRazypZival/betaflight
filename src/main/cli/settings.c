@@ -233,6 +233,7 @@ static const char * const lookupTableBlackboxDevice[] = {
     "SPIFLASH",
     "SDCARD",
     "SERIAL",
+    "ASCENT",
 #ifdef USE_BLACKBOX_VIRTUAL
     "VIRTUAL",
 #endif

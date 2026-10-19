@@ -36,6 +36,9 @@
 #include "config/feature.h"
 
 #include "drivers/accgyro/accgyro.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#endif
 #include "drivers/camera_control.h"
 #include "drivers/compass/compass.h"
 #include "drivers/sensor.h"
@@ -126,6 +129,10 @@
 static void taskMain(timeUs_t currentTimeUs)
 {
     UNUSED(currentTimeUs);
+
+#ifdef USE_ASCENT
+    ascentUpdate();
+#endif
 
 #ifdef USE_SDCARD
     afatfs_poll();

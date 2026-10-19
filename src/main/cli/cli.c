@@ -74,6 +74,9 @@ bool cliMode = false;
 #include "drivers/display.h"
 #include "drivers/dma.h"
 #include "drivers/flash/flash.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#endif
 #include "drivers/inverter.h"
 #include "drivers/io.h"
 #include "drivers/io_impl.h"
@@ -3228,6 +3231,12 @@ RAM_CODE static void cliFlashErase(const char *cmdName, char *cmdline)
     flashfsEraseCompletely();
 
     while (!flashfsIsReady()) {
+#ifdef USE_ASCENT
+        if (blackboxConfig()->device == BLACKBOX_DEVICE_ASCENT && !ascentIsAvailable()) {
+            cliPrintErrorLinef("flash_erase", "ASCENT unavailable");
+            return;
+        }
+#endif
         flashfsEraseAsync();
 #ifndef MINIMAL_CLI
         cliPrintf(".");
