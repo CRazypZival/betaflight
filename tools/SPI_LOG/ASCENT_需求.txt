@@ -1,0 +1,38 @@
+ASCENT 需求 v2（2026-10-20 变更，v1 块设备方案作废）
+----------------------------------------------------
+变更原因：VTX（SOC）侧自带存储和导出能力，BF 不需要伪装 flash、
+不需要提供读取和空间管理，只要把 log 流实时推过去。
+
+一、目标
+BF 解锁后记录 log，实时通过 SPI 推给 VTX。
+VTX 自行存储；满了自行丢弃；自行导出（不经 Configurator）。
+
+二、行为定义
+1. 内容：与 UART-blackbox 完全相同的原始 log 字节流
+   （格式/内容不变，只是传输通道从串口换成 SPI）
+2. 时机：blackbox_mode = NORMAL 默认行为，解锁记录、落地停止
+3. 推送：BF 唯一发起方；日志按块（≤256B）封装 MSP 帧推送，
+   VTX 应答 ACK，BF 超时重发
+4. 流控：无。VTX 满了自行丢弃新数据即可，BF 不感知不处理
+5. VTX 掉线/未就绪：BF 静默跳过，绝不影响飞行
+
+三、协议骨架（传输节奏沿用已验证的 v1 物理+事务层）
+- 物理层、帧格式、CRC、一问一答节奏：不变（见交接包协议文档）
+- 命令收敛为三条：
+  PING   0x5A01  探活，开机窗口 2s
+  DATA   0x5A10  payload = log 字节流块（≤256B）→ ACK
+  STATUS 0x5A07  可选，VTX 想报状态就报，BF 不依赖
+- GEOMETRY / READ / WRITE / ERASE_* 全部作废
+
+四、验收
+1. 解锁即记录，VTX 侧文件增长；落地停止
+2. VTX 落盘数据块全部 CRC 正确（无错帧入库）
+3. 飞行全程无卡顿（异步推送，主循环零阻塞）
+4. VTX 满后继续飞：BF 正常推送，VTX 丢弃，无异常
+
+五、BF 侧改动清单（待实现，v1 代码在 git 历史可回溯）
+- ascent.c 重写：删 flashVTable/flashfs 路径，改为流式写入 API
+- blackbox_io.c：ASCENT case 改为流式语义（同 SERIAL 的行为）
+- 摘除 ASCENT 与 MSC/emfat、MSP_DATAFLASH、flash_info 的关联
+- settings/枚举名 BLACKBOX_DEVICE_ASCENT 保留不动
+- ESP32 参考固件、交接包协议文档同步重做（v1 交接包暂勿发给 SOC）
