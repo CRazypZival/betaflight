@@ -23,6 +23,7 @@ for stem, relative in (
         subprocess.run([
             "cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
             "-fsanitize=address,undefined", "-g", "-I", str(temp),
+            "-fsanitize-address-use-after-return=always",
             str(test), "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)

@@ -56,6 +56,9 @@
 #include "drivers/camera_control.h"
 #include "drivers/compass/compass.h"
 #include "drivers/dma.h"
+#ifdef USE_ASCENT
+#include "drivers/ascent.h"
+#endif
 #include "drivers/dshot.h"
 #include "drivers/exti.h"
 #include "drivers/flash/flash.h"
@@ -859,6 +862,9 @@ void initPhase3(void)
             initFlags |= SD_INIT_ATTEMPTED;
         }
     }
+#endif
+#ifdef USE_ASCENT
+    ascentInit();                        // Register SPI before DMA allocation and blackbox startup.
 #endif
 #ifdef USE_BLACKBOX
     blackboxInit();

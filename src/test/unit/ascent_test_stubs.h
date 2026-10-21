@@ -20,6 +20,16 @@
 #define PREINIT_PIN_STATE_HIGH 1
 #define FLASHIO_SPI 0
 #define FLASH_TYPE_NOR 0
+#define ASCENT_CHUNK 256
+#define ASCENT_RING_SIZE 4096
+#define ASCENT_MAGIC "ASCENT01"
+
+void ascentInit(void);
+void ascentUpdate(void);
+void ascentWrite(const uint8_t *data, int len);
+int ascentWriteFree(void);
+bool ascentFlushed(void);
+bool ascentIsAvailable(void);
 
 typedef void spiResource_t;
 typedef struct {
@@ -65,6 +75,7 @@ void delay(unsigned ms);
 static inline int32_t cmp32(uint32_t a, uint32_t b) { return (int32_t)(a - b); }
 bool spiIsBusy(const extDevice_t *dev);
 bool spiUseDMA(const extDevice_t *dev);
+bool spiUseSDO_DMA(const extDevice_t *dev);
 void spiSequence(const extDevice_t *dev, busSegment_t *segments);
 static inline int IOGetByTag(int tag) { return tag; }
 static inline bool IOIsFreeOrPreinit(int pin) { UNUSED(pin); return true; }

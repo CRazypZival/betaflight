@@ -2053,6 +2053,10 @@ void blackboxUpdate(timeUs_t currentTimeUs)
 {
     static blackboxState_e cacheFlushNextState;
 
+    extern int16_t debug[];
+    debug[4] = blackboxState;
+    debug[5] = blackboxConfig()->mode;
+
     switch (blackboxState) {
     case BLACKBOX_STATE_STOPPED:
         if (ARMING_FLAG(ARMED)) {

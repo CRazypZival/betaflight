@@ -1,7 +1,8 @@
 /*
- * ASCENT 测试固件 - ESP32-S3 SPI 从机端
- * MSP v2 over SPI + persistent flash partition
- * 协议契约见同目录 README.txt
+ * ASCENT 测试固件 - ESP32-S3 SPI 从机端（v2 流式）
+ * 接收 BF 推送的原始 log 字节流（MSP v2 DATA 帧），追加存储到自带 flash 分区。
+ * 满了丢弃新数据（STATUS 可查）；数据断电保留；导出 = 读分区 HEADER_SIZE 起的前 length 字节。
+ * 协议契约见 packs/SPI_MSP协议.txt
  */
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +11,6 @@
 #include "driver/spi_slave.h"
 #include "esp_log.h"
 #include "esp_partition.h"
-#include "esp_attr.h"
 
 /* 接线（BF 主机 ↔ 本机从机），可改 */
 #define PIN_MOSI 10  /* BF→ESP */
@@ -18,193 +18,109 @@
 #define PIN_SCK  12
 #define PIN_CS   13
 
-#define TRANS_BYTES   512
-#define FLASH_SECTOR  4096
+#define TRANS_BYTES     512
+#define FLASH_SECTOR    4096
 #define MSP_MAX_PAYLOAD 1024
-#define READ_MAX      256
+#define DATA_MAX        256
+#define HEADER_SIZE     FLASH_SECTOR     /* 分区首扇区存头：magic + 已写长度 */
+#define HDR_MAGIC       0x42435341u      /* "ASCB" */
 
-/* 自定义命令 ID，最终分配后全局替换 */
-#define ASCENT_PING         0x5A01
-#define ASCENT_GEOMETRY     0x5A02
-#define ASCENT_READ         0x5A03
-#define ASCENT_WRITE        0x5A04
-#define ASCENT_ERASE_SECTOR 0x5A05
-#define ASCENT_ERASE_ALL    0x5A06
-#define ASCENT_STATUS       0x5A07
+/* 命令 ID，与 BF ascent.c 同步 */
+#define ASCENT_PING   0x5A01
+#define ASCENT_DATA   0x5A10
+#define ASCENT_STATUS 0x5A07
 
 static const char *TAG = "ascent";
 
 static const esp_partition_t *store;
-static uint32_t capacity;
-static portMUX_TYPE eraseLock = portMUX_INITIALIZER_UNLOCKED;
-static uint8_t eraseStatus; // 0 ready, 1 busy, 2 failed
-static bool startErase;
-static bool eraseLaunched;
+static uint32_t capacity;      /* 数据区容量 = 分区大小 - 头扇区 */
+static uint32_t written;       /* 已写入字节数（持久化于头扇区） */
+static bool storageFull;
 
 /* DMA 缓冲必须常驻内部 RAM */
 DMA_ATTR static uint8_t rxbuf[TRANS_BYTES];
 DMA_ATTR static uint8_t txbuf[TRANS_BYTES];
 
+/* ---------- 存储层 ---------- */
+
+static uint8_t pendingChunks;   /* 距上次持久化长度的块数 */
+
+static bool storage_load(void)
+{
+    struct { uint32_t magic, length; } hdr;
+    if (esp_partition_read(store, 0, &hdr, sizeof(hdr)) != ESP_OK)
+        return false;
+    if (hdr.magic == HDR_MAGIC && hdr.length <= capacity) {
+        written = hdr.length;
+        return true;
+    }
+    esp_partition_erase_range(store, 0, HEADER_SIZE);
+    const uint32_t init[2] = { HDR_MAGIC, 0 };
+    if (esp_partition_write(store, 0, init, sizeof(init)) != ESP_OK)
+        return false;
+    written = 0;
+    return true;
+}
+
+static void storage_persist_length(void)
+{
+    esp_partition_erase_range(store, 0, HEADER_SIZE);
+    const uint32_t hdr[2] = { HDR_MAGIC, written };
+    esp_partition_write(store, 0, hdr, sizeof(hdr));
+}
+
+static void storage_append(const uint8_t *data, uint16_t n)
+{
+    if (storageFull || written + n > capacity) {
+        storageFull = true;
+        ESP_LOGW(TAG, "full, dropping %u bytes", n);
+        return;                          /* 满：丢弃，仍回 ACK */
+    }
+    if (esp_partition_write(store, HEADER_SIZE + written, data, n) != ESP_OK) {
+        ESP_LOGW(TAG, "write fail at %u", (unsigned)written);
+        return;
+    }
+    written += n;
+    if (++pendingChunks >= 16) {         /* 每 4KB 数据持久化一次长度 */
+        pendingChunks = 0;
+        storage_persist_length();
+    }
+}
+
 /* ---------- MSP v2 ---------- */
 
-enum { MSP_IDLE, MSP_MAGIC, MSP_DIR, MSP_FLAG, MSP_CMD_LO, MSP_CMD_HI,
-       MSP_LEN_LO, MSP_LEN_HI, MSP_PAYLOAD, MSP_CRC };
-
-static struct {
-    int state;
-    uint8_t crc;
-    uint8_t flag;
-    uint16_t cmd, len, got;
-    uint8_t payload[MSP_MAX_PAYLOAD];
-} msp;
-
-static uint8_t crc8_dvb_s2(uint8_t crc, const uint8_t *d, int n)
+static uint8_t crc8_dvb_s2(uint8_t crc, const uint8_t *data, int len)
 {
-    for (int i = 0; i < n; i++) {
-        crc ^= d[i];
+    for (int i = 0; i < len; i++) {
+        crc ^= data[i];
         for (int b = 0; b < 8; b++)
             crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0xD5) : (uint8_t)(crc << 1);
     }
     return crc;
 }
 
-static uint32_t rd32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
+static uint8_t respbuf[TRANS_BYTES];
+static int resp_len;
 
-static void wr32(uint8_t *p, uint32_t v)
+static int msp_build(uint8_t *out, uint8_t flag, uint16_t cmd, const uint8_t *payload, uint16_t len)
 {
-    p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
-}
-
-static int msp_build(uint8_t *out, uint16_t cmd, const uint8_t *data, uint16_t len)
-{
-    out[0] = '$'; out[1] = 'X'; out[2] = '>'; out[3] = msp.flag;
+    out[0] = '$'; out[1] = 'X'; out[2] = '>'; out[3] = flag;
     out[4] = cmd & 0xFF; out[5] = cmd >> 8;
     out[6] = len & 0xFF; out[7] = len >> 8;
     if (len)
-        memcpy(&out[8], data, len);
+        memcpy(&out[8], payload, len);
     out[8 + len] = crc8_dvb_s2(0, &out[3], 5 + len);
     return 9 + len;
 }
 
-static void erase_all_task(void *arg)
-{
-    (void)arg;
-    ESP_LOGI(TAG, "erase_all start");
-    esp_err_t err = ESP_OK;
-    for (uint32_t address = 0; address < capacity && err == ESP_OK; address += FLASH_SECTOR) {
-        err = esp_partition_erase_range(store, address, FLASH_SECTOR);
-        vTaskDelay(1);
-    }
-    portENTER_CRITICAL(&eraseLock);
-    eraseStatus = err == ESP_OK ? 0 : 2;
-    portEXIT_CRITICAL(&eraseLock);
-    ESP_LOGI(TAG, "erase_all %s", esp_err_to_name(err));
-    vTaskDelete(NULL);
-}
+static struct {
+    int state;
+    uint8_t crc, flag;
+    uint16_t cmd, len, got;
+    uint8_t payload[MSP_MAX_PAYLOAD];
+} msp;
 
-/* 返回应答帧长度；0 = 不应答 */
-static int handle_cmd(uint16_t cmd, const uint8_t *p, uint16_t len, uint8_t *resp)
-{
-    portENTER_CRITICAL(&eraseLock);
-    const uint8_t status = eraseStatus;
-    portEXIT_CRITICAL(&eraseLock);
-    if (status && cmd != ASCENT_STATUS && cmd != ASCENT_PING && cmd != ASCENT_GEOMETRY) {
-        return 0;
-    }
-    switch (cmd) {
-    case ASCENT_PING:
-        if (len != 0)
-            return 0;
-        ESP_LOGI(TAG, "PING");
-        return msp_build(resp, cmd, (const uint8_t *)"ASCENT01", 8);
-
-    case ASCENT_GEOMETRY: {
-        if (len != 0)
-            return 0;
-        uint8_t b[8];
-        wr32(b, capacity);
-        wr32(b + 4, FLASH_SECTOR);
-        ESP_LOGI(TAG, "GEOMETRY %u/%u", (unsigned)capacity, (unsigned)FLASH_SECTOR);
-        return msp_build(resp, cmd, b, 8);
-    }
-
-    case ASCENT_READ: {
-        if (len != 8)
-            return 0;
-        uint32_t addr = rd32(p), n = rd32(p + 4);
-        if (n > READ_MAX || addr > capacity || n > capacity - addr) {
-            ESP_LOGW(TAG, "READ oob addr=%u n=%u", (unsigned)addr, (unsigned)n);
-            return 0;
-        }
-        static uint8_t rdata[READ_MAX];
-        esp_err_t err = esp_partition_read(store, addr, rdata, n);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "READ fail addr=%u %s", (unsigned)addr, esp_err_to_name(err));
-            return 0;
-        }
-        ESP_LOGD(TAG, "READ addr=%u n=%u", (unsigned)addr, (unsigned)n);
-        return msp_build(resp, cmd, rdata, n);
-    }
-
-    case ASCENT_WRITE: {
-        if (len < 4)
-            return 0;
-        uint32_t addr = rd32(p);
-        uint32_t n = len - 4;
-        if (n > READ_MAX || addr > capacity || n > capacity - addr) {
-            ESP_LOGW(TAG, "WRITE oob addr=%u n=%u", (unsigned)addr, (unsigned)n);
-            return 0;
-        }
-        esp_err_t err = esp_partition_write(store, addr, p + 4, n);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "WRITE fail addr=%u %s", (unsigned)addr, esp_err_to_name(err));
-            return 0;
-        }
-        ESP_LOGD(TAG, "WRITE addr=%u n=%u", (unsigned)addr, (unsigned)n);
-        return msp_build(resp, cmd, NULL, 0);
-    }
-
-    case ASCENT_ERASE_SECTOR: {
-        if (len != 4)
-            return 0;
-        uint32_t addr = rd32(p);
-        if (addr >= capacity || addr % FLASH_SECTOR) {
-            ESP_LOGW(TAG, "ERASE oob addr=%u", (unsigned)addr);
-            return 0;
-        }
-        esp_err_t err = esp_partition_erase_range(store, addr, FLASH_SECTOR);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "ERASE fail addr=%u %s", (unsigned)addr, esp_err_to_name(err));
-            return 0;
-        }
-        ESP_LOGI(TAG, "ERASE_SECTOR addr=%u", (unsigned)addr);
-        return msp_build(resp, cmd, NULL, 0);
-    }
-
-    case ASCENT_ERASE_ALL:
-        if (len != 0)
-            return 0;
-        ESP_LOGI(TAG, "ERASE_ALL (background)");
-        portENTER_CRITICAL(&eraseLock);
-        eraseStatus = 1;
-        portEXIT_CRITICAL(&eraseLock);
-        eraseLaunched = false;
-        return msp_build(resp, cmd, NULL, 0);
-
-    case ASCENT_STATUS:
-        return len == 0 ? msp_build(resp, cmd, &status, 1) : 0;
-
-    default:
-        ESP_LOGW(TAG, "unknown cmd 0x%04x", cmd);
-        return 0;
-    }
-}
-
-static uint8_t respbuf[MSP_MAX_PAYLOAD + 16];
-static int resp_len;
+/* 按序列号缓存最近应答：BF 重发同一请求时直接回放缓存，不重复落盘 */
 static struct {
     bool valid;
     uint8_t flag;
@@ -214,63 +130,91 @@ static struct {
     int responseLength;
 } lastRequest;
 
+/* 返回应答帧长度；0 = 不应答 */
+static int handle_cmd(uint16_t cmd, const uint8_t *p, uint16_t len, uint8_t *resp)
+{
+    switch (cmd) {
+    case ASCENT_PING:
+        if (len)
+            return 0;
+        ESP_LOGI(TAG, "PING written=%u%s", (unsigned)written, storageFull ? " (FULL)" : "");
+        return msp_build(resp, msp.flag, cmd, (const uint8_t *)"ASCENT01", 8);
+
+    case ASCENT_DATA:
+        if (len < 1 || len > DATA_MAX)
+            return 0;
+        storage_append(p, len);
+        return msp_build(resp, msp.flag, cmd, NULL, 0);
+
+    case ASCENT_STATUS:
+        if (len)
+            return 0;
+        return msp_build(resp, msp.flag, cmd, (const uint8_t[]){ storageFull ? 1 : 0 }, 1);
+
+    default:
+        ESP_LOGW(TAG, "unknown cmd 0x%04x", cmd);
+        return 0;
+    }
+}
+
+enum { P_IDLE, P_MAGIC, P_MAGIC2, P_DIR, P_FLAG, P_CMD_LO, P_CMD_HI,
+       P_LEN_LO, P_LEN_HI, P_PAYLOAD, P_CRC };
+
 /* 喂一个收到的字节；完整且 CRC 正确的请求帧在此产生应答 */
 static void msp_feed(uint8_t b)
 {
     switch (msp.state) {
-    case MSP_IDLE:
-        if (b == '$') {
-            msp.state = MSP_MAGIC;
-            msp.crc = 0;
-        }
+    case P_IDLE:
+        if (b == '$') { msp.state = P_MAGIC; msp.crc = 0; }
         break;
-    case MSP_MAGIC:
-        msp.state = (b == 'X') ? MSP_DIR : MSP_IDLE;
+    case P_MAGIC:
+        msp.state = (b == 'X') ? P_MAGIC2 : P_IDLE;
         break;
-    case MSP_DIR:
-        msp.state = (b == '<') ? MSP_FLAG : MSP_IDLE;
+    case P_MAGIC2:
+        msp.state = (b == '<') ? P_FLAG : P_IDLE;
         break;
-    case MSP_FLAG:
+    case P_FLAG:
         msp.flag = b;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
-        msp.state = MSP_CMD_LO;
+        msp.state = P_CMD_LO;
         break;
-    case MSP_CMD_LO:
+    case P_CMD_LO:
         msp.cmd = b;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
-        msp.state = MSP_CMD_HI;
+        msp.state = P_CMD_HI;
         break;
-    case MSP_CMD_HI:
+    case P_CMD_HI:
         msp.cmd |= b << 8;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
-        msp.state = MSP_LEN_LO;
+        msp.state = P_LEN_LO;
         break;
-    case MSP_LEN_LO:
+    case P_LEN_LO:
         msp.len = b;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
-        msp.state = MSP_LEN_HI;
+        msp.state = P_LEN_HI;
         break;
-    case MSP_LEN_HI:
+    case P_LEN_HI:
         msp.len |= b << 8;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
         if (msp.len > MSP_MAX_PAYLOAD) {
             ESP_LOGW(TAG, "payload too big %u", msp.len);
-            msp.state = MSP_IDLE;
+            msp.state = P_IDLE;
         } else {
             msp.got = 0;
-            msp.state = msp.len ? MSP_PAYLOAD : MSP_CRC;
+            msp.state = msp.len ? P_PAYLOAD : P_CRC;
         }
         break;
-    case MSP_PAYLOAD:
+    case P_PAYLOAD:
         msp.payload[msp.got++] = b;
         msp.crc = crc8_dvb_s2(msp.crc, &b, 1);
         if (msp.got == msp.len)
-            msp.state = MSP_CRC;
+            msp.state = P_CRC;
         break;
-    case MSP_CRC:
+    case P_CRC:
         if (b == msp.crc) {
             if (lastRequest.valid && lastRequest.flag == msp.flag && lastRequest.cmd == msp.cmd
                 && lastRequest.len == msp.len && memcmp(lastRequest.payload, msp.payload, msp.len) == 0) {
+                /* 序列号+内容相同的重发：回放缓存应答，不重复落盘 */
                 resp_len = lastRequest.responseLength;
                 memcpy(respbuf, lastRequest.response, resp_len);
             } else {
@@ -285,9 +229,10 @@ static void msp_feed(uint8_t b)
                     memcpy(lastRequest.response, respbuf, resp_len);
                 }
             }
-        } else
+        } else {
             ESP_LOGW(TAG, "crc err cmd=0x%04x", msp.cmd);
-        msp.state = MSP_IDLE;
+        }
+        msp.state = P_IDLE;
         break;
     }
 }
@@ -317,8 +262,7 @@ static bool selftest(void)
     if (memcmp(sec, cmp, FLASH_SECTOR) != 0)
         return false;
 
-    if (esp_partition_erase_range(store, addr, FLASH_SECTOR) != ESP_OK)
-        return false;
+    esp_partition_erase_range(store, addr, FLASH_SECTOR);
     return true;
 }
 
@@ -330,13 +274,17 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "storage: %s @0x%lx size=%u", store->label, (unsigned long)store->address, (unsigned)store->size);
-    capacity = store->size - FLASH_SECTOR;
+    capacity = store->size - HEADER_SIZE - FLASH_SECTOR;   /* 末扇区留给自检 */
 
+    if (!storage_load()) {
+        ESP_LOGE(TAG, "storage header init fail");
+        return;
+    }
     if (!selftest()) {
         ESP_LOGE(TAG, "selftest FAIL");
         return;
     }
-    ESP_LOGI(TAG, "selftest PASS, logical capacity=%u", (unsigned)capacity);
+    ESP_LOGI(TAG, "selftest PASS, resuming at offset=%u, capacity=%u", (unsigned)written, (unsigned)capacity);
 
     spi_bus_config_t buscfg = {
         .mosi_io_num = PIN_MOSI,
@@ -372,29 +320,10 @@ void app_main(void)
         t.user = NULL;
 
         ESP_ERROR_CHECK(spi_slave_queue_trans(SPI2_HOST, &t, portMAX_DELAY));
-        // Queue the next receive before starting flash work, after the erase ACK was clocked out.
-        if (startErase) {
-            startErase = false;
-            if (xTaskCreate(erase_all_task, "erase_all", 4096, NULL, 3, NULL) != pdPASS) {
-                portENTER_CRITICAL(&eraseLock);
-                eraseStatus = 2;
-                portEXIT_CRITICAL(&eraseLock);
-            }
-        }
         ESP_ERROR_CHECK(spi_slave_get_trans_result(SPI2_HOST, &ret, portMAX_DELAY));
 
         int n = ret->trans_len / 8;
-        if (n >= 9 && txbuf[0] == '$' && txbuf[4] == (ASCENT_ERASE_ALL & 0xFF)
-            && txbuf[5] == (ASCENT_ERASE_ALL >> 8)) {
-            // Only the original ACK may launch an erase; duplicate ACKs reuse the cached result.
-            portENTER_CRITICAL(&eraseLock);
-            if (eraseStatus == 1 && !eraseLaunched) {
-                startErase = true;
-                eraseLaunched = true;
-            }
-            portEXIT_CRITICAL(&eraseLock);
-        }
-        msp.state = MSP_IDLE;
+        msp.state = P_IDLE;
         for (int i = 0; i < n; i++)
             msp_feed(rxbuf[i]);
     }
