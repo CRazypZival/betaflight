@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Compile the production ASCENT driver with a deterministic SPI/clock backend."""
 import pathlib
 import re
 import subprocess

@@ -192,7 +192,7 @@ int blackboxWriteString(const char *s)
         length = strlen(s);
         ascentWrite((const uint8_t*) s, length);
         break;
-#endif // USE_ASCENT
+#endif
 
 #ifdef USE_FLASHFS
     case BLACKBOX_DEVICE_FLASH:

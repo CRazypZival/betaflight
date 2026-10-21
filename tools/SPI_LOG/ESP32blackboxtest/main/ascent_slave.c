@@ -1,9 +1,3 @@
-/*
- * ASCENT 测试固件 - ESP32-S3 SPI 从机端（v2 流式）
- * 接收 BF 推送的原始 log 字节流（MSP v2 DATA 帧），追加存储到自带 flash 分区。
- * 满了丢弃新数据（STATUS 可查）；数据断电保留；导出 = 读分区 HEADER_SIZE 起的前 length 字节。
- * 协议契约见 packs/SPI_MSP协议.txt
- */
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -12,9 +6,8 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 
-/* 接线（BF 主机 ↔ 本机从机），可改 */
-#define PIN_MOSI 10  /* BF→ESP */
-#define PIN_MISO 11  /* ESP→BF */
+#define PIN_MOSI 10
+#define PIN_MISO 11
 #define PIN_SCK  12
 #define PIN_CS   13
 
@@ -22,10 +15,9 @@
 #define FLASH_SECTOR    4096
 #define MSP_MAX_PAYLOAD 1024
 #define DATA_MAX        256
-#define HEADER_SIZE     FLASH_SECTOR     /* 分区首扇区存头：magic + 已写长度 */
-#define HDR_MAGIC       0x42435341u      /* "ASCB" */
+#define HEADER_SIZE     FLASH_SECTOR
+#define HDR_MAGIC       0x42435341u
 
-/* 命令 ID，与 BF ascent.c 同步 */
 #define ASCENT_PING   0x5A01
 #define ASCENT_DATA   0x5A10
 #define ASCENT_STATUS 0x5A07
@@ -33,17 +25,15 @@
 static const char *TAG = "ascent";
 
 static const esp_partition_t *store;
-static uint32_t capacity;      /* 数据区容量 = 分区大小 - 头扇区 */
-static uint32_t written;       /* 已写入字节数（持久化于头扇区） */
+static uint32_t capacity;
+static uint32_t written;
 static bool storageFull;
 
-/* DMA 缓冲必须常驻内部 RAM */
+// DMA buffers must remain in internal RAM.
 DMA_ATTR static uint8_t rxbuf[TRANS_BYTES];
 DMA_ATTR static uint8_t txbuf[TRANS_BYTES];
 
-/* ---------- 存储层 ---------- */
-
-static uint8_t pendingChunks;   /* 距上次持久化长度的块数 */
+static uint8_t pendingChunks;
 
 static bool storage_load(void)
 {
@@ -74,20 +64,18 @@ static void storage_append(const uint8_t *data, uint16_t n)
     if (storageFull || written + n > capacity) {
         storageFull = true;
         ESP_LOGW(TAG, "full, dropping %u bytes", n);
-        return;                          /* 满：丢弃，仍回 ACK */
+        return;
     }
     if (esp_partition_write(store, HEADER_SIZE + written, data, n) != ESP_OK) {
         ESP_LOGW(TAG, "write fail at %u", (unsigned)written);
         return;
     }
     written += n;
-    if (++pendingChunks >= 16) {         /* 每 4KB 数据持久化一次长度 */
+    if (++pendingChunks >= 16) {
         pendingChunks = 0;
         storage_persist_length();
     }
 }
-
-/* ---------- MSP v2 ---------- */
 
 static uint8_t crc8_dvb_s2(uint8_t crc, const uint8_t *data, int len)
 {
@@ -120,7 +108,6 @@ static struct {
     uint8_t payload[MSP_MAX_PAYLOAD];
 } msp;
 
-/* 按序列号缓存最近应答：BF 重发同一请求时直接回放缓存，不重复落盘 */
 static struct {
     bool valid;
     uint8_t flag;
@@ -130,7 +117,6 @@ static struct {
     int responseLength;
 } lastRequest;
 
-/* 返回应答帧长度；0 = 不应答 */
 static int handle_cmd(uint16_t cmd, const uint8_t *p, uint16_t len, uint8_t *resp)
 {
     switch (cmd) {
@@ -160,7 +146,6 @@ static int handle_cmd(uint16_t cmd, const uint8_t *p, uint16_t len, uint8_t *res
 enum { P_IDLE, P_MAGIC, P_MAGIC2, P_DIR, P_FLAG, P_CMD_LO, P_CMD_HI,
        P_LEN_LO, P_LEN_HI, P_PAYLOAD, P_CRC };
 
-/* 喂一个收到的字节；完整且 CRC 正确的请求帧在此产生应答 */
 static void msp_feed(uint8_t b)
 {
     switch (msp.state) {
@@ -214,7 +199,6 @@ static void msp_feed(uint8_t b)
         if (b == msp.crc) {
             if (lastRequest.valid && lastRequest.flag == msp.flag && lastRequest.cmd == msp.cmd
                 && lastRequest.len == msp.len && memcmp(lastRequest.payload, msp.payload, msp.len) == 0) {
-                /* 序列号+内容相同的重发：回放缓存应答，不重复落盘 */
                 resp_len = lastRequest.responseLength;
                 memcpy(respbuf, lastRequest.response, resp_len);
             } else {
@@ -236,8 +220,6 @@ static void msp_feed(uint8_t b)
         break;
     }
 }
-
-/* ---------- 上电自检 ---------- */
 
 static bool selftest(void)
 {
@@ -274,7 +256,8 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "storage: %s @0x%lx size=%u", store->label, (unsigned long)store->address, (unsigned)store->size);
-    capacity = store->size - HEADER_SIZE - FLASH_SECTOR;   /* 末扇区留给自检 */
+    // Reserve the final sector for the startup self-test.
+    capacity = store->size - HEADER_SIZE - FLASH_SECTOR;
 
     if (!storage_load()) {
         ESP_LOGE(TAG, "storage header init fail");

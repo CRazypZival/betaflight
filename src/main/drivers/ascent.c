@@ -19,13 +19,6 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*
- * ASCENT：SOC 黑匣子流式驱动（v2.1 单向流）。
- * BF 把与 UART-blackbox 内容相同的原始日志字节流封装成 MSP v2 DATA 帧，
- * 经 SPI 单向推给 SOC。无应答、无重试——SOC 必须自行缓存/落盘/丢弃。
- * 行为同 SERIAL 设备：解锁记录、缓冲满丢弃新数据、SOC 掉线静默丢块。
- * 协议见 tools/SPI_LOG/packs/SPI_MSP协议.txt，命令 ID 与从机实现同步。
- */
 #include <string.h>
 
 #include "platform.h"
@@ -44,8 +37,8 @@ extern int16_t debug[];
 
 #define ASCENT_MSP_DATA          0x5A10
 
-#define ASCENT_SPI_SPEED_HZ      8000000     // F405 分频后实际 5.25MHz
-#define ASCENT_FRAME_GAP_US      3000        // 帧间隔：给 SOC 留落盘时间，可按 SOC 能力调大
+#define ASCENT_SPI_SPEED_HZ      8000000
+#define ASCENT_FRAME_GAP_US      3000
 #define ASCENT_DMA_TIMEOUT_US    100000
 #define ASCENT_RING_MASK         (ASCENT_RING_SIZE - 1)
 
@@ -73,7 +66,6 @@ STATIC_DMA_DATA_AUTO uint8_t frameBuf[MSP_V2_HDR + ASCENT_CHUNK + 3];
 static busSegment_t segments[2];
 static uint8_t chunkBuf[ASCENT_CHUNK];
 
-/* 流缓冲：生产者 blackbox 任务，消费者 taskMain（单写单读，无锁） */
 static uint8_t ringBuf[ASCENT_RING_SIZE];
 static volatile uint16_t ringHead;
 static volatile uint16_t ringTail;
@@ -94,7 +86,7 @@ static int buildFrame(uint8_t *out, uint8_t sequence, uint16_t cmd, const uint8_
     out[0] = '$';
     out[1] = 'X';
     out[2] = '<';
-    out[3] = sequence;                 // 序列号，SOC 用于去重/丢帧统计
+    out[3] = sequence;
     out[4] = cmd & 0xFF;
     out[5] = cmd >> 8;
     out[6] = len & 0xFF;
@@ -136,7 +128,7 @@ void ascentUpdate(void)
         return;
     }
 
-    debug[2]++;                        // 已推送帧计数
+    debug[2]++;
 
     uint16_t used = (ringHead - ringTail) & ASCENT_RING_MASK;
     uint16_t take = MIN(used, (uint16_t)ASCENT_CHUNK);
@@ -147,7 +139,6 @@ void ascentUpdate(void)
     transaction.frameLength = (length + 3) & ~3;
     memset(frameBuf + length, 0xFF, transaction.frameLength - length);
 
-    // 帧已交付硬件即视为完成；SOC 侧按序列号去重，丢帧即丢数据（单向流契约）
     ringTail = (ringTail + contiguous) & ASCENT_RING_MASK;
 
     segments[0] = (busSegment_t) {
@@ -167,12 +158,12 @@ void ascentWrite(const uint8_t *data, int len)
     for (int i = 0; i < len; i++) {
         uint16_t next = (ringHead + 1) & ASCENT_RING_MASK;
         if (next == ringTail) {
-            debug[3]++;                // 缓冲满，丢弃新数据
+            debug[3]++;
             return;
         }
         ringBuf[ringHead] = data[i];
         ringHead = next;
-        debug[1] = ringHead;           // 流缓冲写入位置观测
+        debug[1] = ringHead;
     }
 }
 
@@ -221,4 +212,4 @@ void ascentInit(void)
     ascentAvailable = true;
     debug[0] = 7;
 }
-#endif // USE_ASCENT
+#endif

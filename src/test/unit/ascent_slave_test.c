@@ -41,14 +41,13 @@ static void request(uint8_t seq, uint16_t cmd, const uint8_t *p, uint16_t n)
 int main(void)
 {
     store = &partition;
-    capacity = sizeof(media) - HEADER_SIZE - FLASH_SECTOR;   /* 与 app_main 一致：头扇区 + 自检扇区 */
+    capacity = sizeof(media) - HEADER_SIZE - FLASH_SECTOR;
     memset(media, 0xA5, sizeof(media));
     assert(storage_load());
     assert(written == 0);
     assert(((uint32_t *)media)[0] == HDR_MAGIC);
     puts("PASS storage header initialised");
 
-    // DATA 追加落盘；重发同序列号不重复落盘
     uint8_t payload[64];
     for (unsigned i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)(i * 3);
     printf("[dbg] full=%d written=%u capacity=%u HEADER=%d\n", storageFull, written, capacity, HEADER_SIZE);
@@ -61,14 +60,12 @@ int main(void)
     assert(writes == baseline + 2 && written == 2 * sizeof(payload));
     puts("PASS DATA appends once per sequence, replay-safe");
 
-    // PING 与 STATUS
     request(3, ASCENT_PING, NULL, 0);
     assert(resp_len == 17 && memcmp(respbuf + 8, "ASCENT01", 8) == 0);
     request(4, ASCENT_STATUS, NULL, 0);
     assert(resp_len == 10 && respbuf[8] == 0);
     puts("PASS PING magic and STATUS ready");
 
-    // 满：丢弃新数据，仍 ACK，STATUS 报满
     storageFull = true;
     uint32_t before = written;
     request(5, ASCENT_DATA, payload, sizeof(payload));
@@ -77,7 +74,6 @@ int main(void)
     assert(resp_len == 10 && respbuf[8] == 1);
     puts("PASS full storage drops data, keeps ACKing, reports via STATUS");
 
-    // 长度持久化：16 块后头扇区出现已写长度
     storageFull = false;
     for (unsigned i = 0; i < 16; i++) {
         storage_append(payload, 64);

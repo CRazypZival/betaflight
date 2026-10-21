@@ -35,7 +35,7 @@ static void completeDMA(void)
     uint8_t *tx = s[0].u.buffers.txData;
     assert(s[0].len % 4 == 0);
     assert(tx[0] == '$' && tx[1] == 'X' && tx[2] == '<');
-    assert(tx[3] != lastSeq);                       // 序列号必须递增
+    assert(tx[3] != lastSeq);
     lastSeq = tx[3];
     const uint16_t cmd = tx[4] | tx[5] << 8;
     const uint16_t len = tx[6] | tx[7] << 8;
@@ -82,7 +82,6 @@ int main(void)
 
     puts("PASS init enables device");
 
-    // 流式推送：600B 跨 3 帧，按序完整到达
     reset();
     ascentWrite(data, sizeof(data));
     assert(!ascentFlushed());
@@ -91,32 +90,29 @@ int main(void)
     assert(memcmp(stream, data, sizeof(data)) == 0);
     puts("PASS streamed bytes arrive in order across chunked DATA frames");
 
-    // 帧间隔：相邻帧起点间隔不小于 GAP
     reset();
     ascentWrite(data, 256);
     drain(100);
     assert(frames == 1);
     puts("PASS frame pacing honours gap");
 
-    // 缓冲满：丢弃新数据，已入队前缀完整
     reset();
     uint8_t big[5000];
     memset(big, 0x5A, sizeof(big));
     ascentWrite(big, sizeof(big));
-    assert(ascentWriteFree() == 0);                 // 恰好收满 RING-1 字节
+    assert(ascentWriteFree() == 0);
     drain(60000);
     assert(writePtr == ASCENT_RING_SIZE - 1);
     assert(memcmp(stream, big, writePtr) == 0);
     puts("PASS ring overflow drops newest bytes and preserves enqueued prefix");
 
-    // A DMA completion delayed by less than the deadline does not block taskMain.
     reset();
     ascentWrite(data, 256);
     tick();
     assert(transaction.state == ASCENT_SENDING);
     dmaUntil = clockUs + 1000000000;
     ascentWrite(data, 10);
-    for (int i = 0; i < 50; i++) tick();            // 挂死期间：不产出也不阻塞
+    for (int i = 0; i < 50; i++) tick();
     assert(writePtr == 0);
     dmaUntil = clockUs - 1;
     for (int i = 0; i < 100 && writePtr != 266; i++) tick();
@@ -152,7 +148,6 @@ int main(void)
     assert(frames == 1 && !ascentIsAvailable());
     puts("PASS DMA timeout disables logging and preserves buffers for a late ISR");
 
-    // 写指针观测自洽
     reset();
     for (int i = 0; i < 10; i++) {
         ascentWrite(data, 100);
